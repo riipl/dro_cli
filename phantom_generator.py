@@ -1,74 +1,260 @@
 import os
 from os.path import exists
 import numpy as np
-from math import sqrt, atan2, acos, cos, sin, exp
 import scipy.misc
-import dicom
+import scipy.ndimage as ndi
+import scipy.ndimage.morphology as morph
+import scipy.ndimage.filters as filters
+import pydicom
 import datetime, time
+import math
+import imageio
 import argparse
+import yaml
+import itertools
+import png_to_dso
+import shutil
 
 # Collects User Input
 parser = argparse.ArgumentParser(description="Select Tumor Features")
-parser.add_argument('--number','-n', action="store",required=False, help="Number of Z-Slices",default=100)
-parser.add_argument('--radius','-r', action="store",required=False, help="Radius in mm",default=20)
-parser.add_argument('--xdeformation','-x',action="store",required=False, help="X Deformation Scaling",default=1)
-parser.add_argument('--ydeformation','-y',action="store",required=False, help="Y Deformation Scaling",default=1)
-parser.add_argument('--zdeformation','-z',action="store",required=False, help="Z Deformation Scaling",default=1)
-parser.add_argument('--decay', '-d', action="store", required=False, help="Exponential Decay Rate",default=0)
-parser.add_argument('--frequency','-f', action="store", required=False, help="Bump Frequency",default=0)
-parser.add_argument('--depth', '-b', action="store",required=False, help="Bump Depth",default=0)
-parser.add_argument('--texture','-t', action="store", required=False, help="Texture Bump Diameter",default=0)
-parser.add_argument('--dtexture','-u',action='store', required=False,help="3D textures",default=0)
-parser.add_argument('--random','-q', action="store",required=False, help = "Random Noise Amplitude",default=0)
-parser.add_argument('--size','-s', action="store_true",required=False, help = "Small Array", default=False)
+parser.add_argument('--config', '-c', action="store", required=False, help="Config File",default='config_dros.yaml')
 parser.add_argument('--output', '-o', action="store", required=False, help="Output directory",default='Output/')
+
 results = parser.parse_args()
 
-# Sets Results to Variables
-n = int(results.number)
-r = float(results.radius)
-xx = float(results.xdeformation)
-yy = float(results.ydeformation)
-zz = float(results.zdeformation)
-decay = float(results.decay)
-freq = float(results.frequency)
-h = float(results.depth)
-texture = float(results.texture)
-new = bool(int(results.dtexture))
-randy = float(results.random)
-small = results.size
-out = results.output
 
-# Create Output Folders
-name = 'Phantom-'+str(r)+'-'+str(xx)+'-'+str(yy)+'-'+str(zz)+'-'+str(decay)+'-'+str(freq)+'-'+str(h)+'-'+str(texture)+'-'+str(randy)+'-'+str(float(new))
-print name
-mask_folder = out+'Mask/'+name
-dicom_folder = out+'DICOM/'+name
-if not exists(mask_folder):
-    os.mkdir(mask_folder)
-if not exists(dicom_folder):
-    os.mkdir(dicom_folder)
+default_parameters = {
+  # Size Features
+  "mean_radius":        [100, 100, 1],
+  # Shape Features
+  "x_deformation":      [1, 1, 1],
+  "y_deformation":      [1, 1, 1],
+  "z_deformation":      [1, 1, 1],
+  "surface_frequency":  [0, 0, 1],
+  "surface_amplitude":  [0, 0, 1],
+  # Intensity Features
+  "mean_intensity":     [100, 100, 1],
+  # Texture Features
+  "texture_wavelength": [0, 0, 1],
+  "texture_amplitude":  [0, 0, 1],
+  # Margin Features
+  "gaussian_standard_deviation":   [0, 0, 1]
+}
 
-# Creates Instance Variable
-instance_uid = dicom.UID.generate_uid()[:-1]+'.1'
-instance_step = instance_uid
+ordered_keys = ["mean_radius", 
+                "x_deformation","y_deformation", "z_deformation","surface_frequency", "surface_amplitude",
+                "mean_intensity", 
+                "texture_wavelength", "texture_amplitude", 
+                "gaussian_standard_deviation"]
 
-# Defines theta for the polar coordinates
-def t(i,j):
-    if i == 0:
-        i = i + 50/float(s)
-    return atan2(j,float(i))
+# process_input
+# Takes:    raw yaml file received from the user 
+# Does:     extracts all values into lists associated with each parameter
+# Returns:  processed dictionary of parameters names as keys and lists of values 
+def process_input(yml_file):
+    with open(yml_file) as file:
+        yaml_input = yaml.safe_load(file)
+    try: 
+        user_parameters = yaml_input["parameters"]
+        if user_parameters is None:
+            raise Exception("Empty Parameters Dictionary")
+    except:
+        print("Error in YAML File, Defaulting to Default Parameters")
+        user_parameters = default_parameters
+    for parameter in default_parameters:
+        if parameter not in user_parameters or user_parameters[parameter] is None:
+            user_parameters[parameter] =  default_parameters[parameter]
+    return user_parameters
 
-#Defines phi for the polar coordinates
-def p(i,j,k):
-    if k == 0:
-        k = k + 50/float(n)
-    return acos(k/float(sqrt(i*i+j*j+k*k)))
+# expand_range
+# Takes:    dictionary of parameters
+# Does:     expands the min, max, number of values into array of values at equal intervals
+# Returns:  dictionary of parameters with full arrays of values
+def expand_range(dic):
+    expanded = {}
+    for key in dic.keys():
+        kmax = dic[key][0]
+        kmin = dic[key][1]
+        knum = dic[key][2]
+        expanded[key] = frange(kmin, kmax, knum)
+    return expanded
+
+# generate_params
+# Takes:    dictionary of parameters with full arrays of values
+# Does:     find all combinations of parameters of all ranges of values
+# Returns:  array of all combinations of parameters
+def generate_params(dic):
+    params = []
+    for key in ordered_keys:
+        params.append(dic[key])
+    params = list(itertools.product(*params))
+    params = [list(p) for p in params]
+    return params
+
+# generating
+# Takes:    array of all combinations of parameters
+# Does:     generates the images and masks for each combination of parameters
+# Returns:  List of all folders for all images generated
+def generating(params):
+    dicoms = []
+    masks = []
+    dsos = []
+    for param in params:
+        output = generate(param)
+        name, dicom, mask = output
+        dso = png_to_dso.make_dsos(mask, dicom)
+        dicoms.append(dicom)
+        masks.append(mask)
+        dsos.append(dso)
+    return [dicoms, masks, dsos]
+
+
+# generate
+# Takes:    list of arguments for a single DRO
+# Does:     make unique ids for the dro
+#           generate all files for the dro
+# Return:   list of the name and locations of the dros files
+def generate(arguments):
+    arguments = [float(arg) for arg in arguments]
+    global r,  xx, yy, zz, shape_freq, shape_amp, avg, text_wav, text_amp, decay
+    r,  xx, yy, zz, shape_freq, shape_amp, avg, text_wav, text_amp, decay = arguments
+    make_folders(arguments)
+    make_unique()
+    generate_files()
+    return [name, dicom_folder, mask_folder]
+
+# make_folders
+# Takes:    argument list for a single dro
+# Does:     generate unique name for the dro
+#           create dicom and mask folder for this dro
+# Return:   nothing
+def make_folders(arguments):
+    global name
+    name = 'Phantom'
+    for arg in arguments:
+        name = name + '-' + str(arg)
+
+    global mask_folder, dicom_folder
+    mask_folder = out+'Mask/'+name
+    dicom_folder = out+'DICOM/'+name
+    if not exists(mask_folder):
+        os.makedirs(mask_folder)
+    if not exists(dicom_folder):
+        os.makedirs(dicom_folder)
+    return []
+
+# make_unique
+# Takes:    nothing
+# Does:     generate unique ids for the dro
+# Return:   nothing
+def make_unique():
+    global instance_uid, instance_step
+    instance_uid = pydicom.uid.generate_uid()[:-1]+'.1'
+    instance_step = instance_uid
+
+# Generate File by Slice
+def generate_files():
+    mask, output = generate_dro()
+    n = np.shape(mask)[-1]
+    print('phantom generated')
+    for k in range(n):
+        # Once a complete 2D Slice has been generated, write this to png and dicome
+        png_name = mask_folder+'/slice' + str(k).zfill(3) + '.png'
+        mask_slice = mask[:, :, k].astype(np.uint8)
+        imageio.imwrite(png_name, mask_slice)
+        input_array = output[:,:,k]
+        write_dicom(input_array, dicom_folder+'/slice' + str(k).zfill(3) + '.dcm', k,mask[:, :, k])
+
+
+# generate_dro
+# Takes:    nothing
+# Does:     generate dro from its mathematical definition
+# Return:   image array embedding the object and mask for the object
+def generate_dro():
+    n = 300
+    s = 512
+    # Make 3D Grid
+    x = np.linspace(-s/2,s/2,s)
+    y = np.linspace(-s/2,s/2,s)
+    z = np.linspace(-n/2,n/2,n)
+    xt, yt, zt = np.meshgrid(x,y,z,sparse=True) # xt stands for "x-true"
+    if xx != 1 or yy != 1 or zz != 1:
+        xs, ys, zs = np.meshgrid(1/float(xx)*x,1/float(yy)*y,1/float(zz)*z,sparse=True) # xs stands for "x stretch"
+    else:
+        xs, ys, zs = xt, yt, zt
+    # Calculate distance to origin of each point then compare to the shape of the object 
+    origin = np.sqrt(xs*xs + ys*ys + zs*zs)
+    rp = r
+    if shape_amp != 0.0 and shape_freq != 0.0:
+        rp = r * (1 + shape_amp * np.sin(shape_freq * np.arccos(zs/origin)) * \
+                                  np.cos(shape_freq * np.arctan2(ys,xs)))
+    mask = rp >= origin
+    # Apply Texture 
+    texture = np.full_like(mask,1024,dtype=float)  
+    if text_amp != 0.0 and text_wav != 0.0:
+        variation = avg + text_amp * np.cos((1 / text_wav) * 2 * np.pi * xt) * \
+                                     np.cos((1 / text_wav) * 2 * np.pi * yt) * \
+                                     np.cos((1 / text_wav) * 2 * np.pi * zt)
+        texture += variation
+    else:
+        texture += avg
+    # Add blurred edge 
+    if decay != 0:
+        big = morph.binary_dilation(mask,iterations=10)
+        texture[~big] = 0
+        inside  = np.copy(texture)
+        inside[~mask] = 0 
+        texture = filters.gaussian_filter(texture,sigma=decay)
+        output = texture
+        texture[mask] = 0
+        output = inside + texture 
+    else:
+        texture[~mask] = 0
+        output = texture
+    return mask, output
+
+
+# prepare_zips
+# Takes:    folders for dicoms, masks, and dsos
+# Does:     zips all folders 
+# Returns:  locations of all the zipped folders
+def prepare_zips(dicoms, masks, dsos):
+    top = os.path.dirname(os.path.dirname(os.path.dirname(dicoms[0])))
+    cur = os.path.join(top,'output')
+    for path in dicoms:
+        if os.path.dirname(os.path.dirname(path)) != cur:
+            move = os.path.join(cur,'DICOM',os.path.basename(path))
+            os.rename(path,move)
+    for path in masks:
+        if os.path.dirname(os.path.dirname(path)) != cur:
+            move = os.path.join(cur,'Mask',os.path.basename(path))
+            os.rename(path,move)
+    for path in dsos:
+        if os.path.dirname(os.path.dirname(path)) != cur:
+            move = os.path.join(cur,'DSO',os.path.basename(path))   
+            os.rename(path,move)
+    dizip = os.path.join(cur,'dicoms')
+    mazip = os.path.join(cur,'masks')
+    dszip = os.path.join(cur,'dsos')
+    shutil.make_archive(dizip,  'zip', os.path.join(cur,'DICOM'))
+    shutil.make_archive(mazip,  'zip', os.path.join(cur,'Mask'))
+    shutil.make_archive(dszip,  'zip', os.path.join(cur,'DSO'))
+    cleanup([os.path.join(cur,'DICOM'), os.path.join(cur,'Mask'), os.path.join(cur,'DSO')])
+    return [dizip+'.zip', mazip+'.zip', dszip+'.zip']
+
+# cleanup
+# Takes:    top folder
+# Does:     deletes everything 
+# Returns:  nothing
+def cleanup(big_folders):
+    for folder in big_folders:
+        shutil.rmtree(folder, ignore_errors=True)       
+
+
 
 #Writes a DICOM file using an input array, filename, and slice number
-def write_dicom(input_array, filename, step):
-
-    ds = dicom.read_file('phantom_framework.dcm')
+def write_dicom(input_array, filename, step,mask_slice):
+    ds = pydicom.dcmread(curr + '/phantom_template.dcm')
 
     ds.ContentDate = str(datetime.date.today()).replace('-', '')
 
@@ -93,8 +279,9 @@ def write_dicom(input_array, filename, step):
 
     (ds.Columns, ds.Rows) = input_array.shape
 
-    input_array = input_array.astype(np.uint16)
-    ds.PixelData = input_array.tostring()
+    input_array_unsign = input_array.astype(np.uint16)
+
+    ds.PixelData = input_array_unsign.tostring()
 
     ds.SliceThickness = str(1)
     ds.ReconstructionDiameter = str(512.0)
@@ -106,57 +293,19 @@ def write_dicom(input_array, filename, step):
     ds.save_as(filename)
     return
 
-# Initiates Two Numpy Arrays to Store Values
-if small:
-    s = 256
-else:
-    s = 512
-mask = np.zeros((s,s,n))
-output = np.zeros((s,s,n))
-
-# Iterate through every i, j, k cell of the arrays
-# Note: Will be faster in future to apply numpy functions to whole arrays
-for k in range(n):
-    z = zz * (-50 + k)           #
-    uz = -50 + k
-    for j in range(s):
-        y = yy * (-256 + j)
-        uy = -256 + j
-        for i in range(s):
-            x = xx * (-256 + i)
-            ux = -256 + i
-
-            if freq == 0.0:      # Set Shape with No surface bumps
-                mask[i, j, k] = r >= sqrt(x*x+y*y+z*z)
-            else:                # Set Shape with surface bumps
-                mask[i,j,k] = (r + (h * r) * sin(freq * p(x, y, z)) * cos(freq * t(x, y))) >= sqrt(x*x+y*y+z*z)
-
-            if mask[i,j,k]:
-                value = 1500     # Set Average Value
-                if decay != 0.0: # Apply Edge Decay Logarithmic Curve
-                    e = exp(- decay * (sqrt(x * x + y * y + z * z) - r))
-                    value *= e / (1 + e)
-                if texture != 0.0:
-                    if new:      # Apply 3D Texture Features
-                        value += 500 * cos((1 / texture) * 2 * np.pi * ux) \
-                                     * cos((1 / texture) * 2 * np.pi * uy) \
-                                     * cos((1 / texture) * 2 * np.pi * uz)
-                    else:        # Apply 2D Texture Features
-                        value += 500 * cos((1 / texture) * 2 * np.pi * ux) \
-                                     * cos((1 / texture) * 2 * np.pi * uy)
-                if randy != 0.0: # Apply Random Noise
-                    value += 500 * randy * np.random.random_sample()
-                output[i,j,k] = value
-            else:
-                output[i,j,k] = 0
-
-    png_name = mask_folder+'/slice' + str(k).zfill(3) + '.png'
-    scipy.misc.imsave(png_name, mask[:, :, k])
-    input_array = output[:,:,k]
-    write_dicom(input_array, dicom_folder+'/slice' + str(k).zfill(3) + '.dcm', k)
+# Create a numpy range 
+def frange(start, stop, step):
+    return np.linspace(start, stop, num=step).tolist()
 
 
-
-
+if __name__ == '__main__':
+    out = results.output
+    curr          = os.path.dirname(os.path.abspath(__file__))
+    processed_inputs = process_input(results.config)
+    expanded_ranges  = expand_range(processed_inputs)
+    full_param_list  = generate_params(expanded_ranges)
+    dicoms, masks, dsos = generating(full_param_list)
+    zips = prepare_zips(dicoms, masks, dsos)
+    
 
 
