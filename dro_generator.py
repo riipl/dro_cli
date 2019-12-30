@@ -16,13 +16,14 @@ import png_to_dso
 import shutil
 
 # Collects User Input
-parser = argparse.ArgumentParser(description="Select Tumor Features")
+parser = argparse.ArgumentParser(description="Upload Config and Output")
 parser.add_argument('--config', '-c', action="store", required=False, help="Config File",default='config_dros.yaml')
 parser.add_argument('--output', '-o', action="store", required=False, help="Output directory",default='Output/')
 
 results = parser.parse_args()
 
 
+# Set of Default Parameters
 default_parameters = {
   # Size Features
   "mean_radius":        [100, 100, 1],
@@ -41,6 +42,7 @@ default_parameters = {
   "gaussian_standard_deviation":   [0, 0, 1]
 }
 
+# Keys in the Order for the DRO Name
 ordered_keys = ["mean_radius", 
                 "x_deformation","y_deformation", "z_deformation","surface_frequency", "surface_amplitude",
                 "mean_intensity", 
@@ -156,7 +158,7 @@ def make_unique():
 def generate_files():
     mask, output = generate_dro()
     n = np.shape(mask)[-1]
-    print('phantom generated')
+    print('dro generated')
     for k in range(n):
         # Once a complete 2D Slice has been generated, write this to png and dicome
         png_name = mask_folder+'/slice' + str(k).zfill(3) + '.png'
@@ -254,7 +256,7 @@ def cleanup(big_folders):
 
 #Writes a DICOM file using an input array, filename, and slice number
 def write_dicom(input_array, filename, step,mask_slice):
-    ds = pydicom.dcmread(curr + '/phantom_template.dcm')
+    ds = pydicom.dcmread(curr + '/dro_template.dcm')
 
     ds.ContentDate = str(datetime.date.today()).replace('-', '')
 
