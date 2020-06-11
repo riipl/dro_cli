@@ -1,7 +1,7 @@
 import os
 from os.path import exists
 import numpy as np
-import scipy.misc
+import imageio
 import scipy.ndimage as ndi
 import scipy.ndimage.morphology as morph
 import scipy.ndimage.filters as filters
@@ -93,18 +93,17 @@ def generate_params(dic):
     params = [list(p) for p in params]
     return params
 
-# generating
+# generate_all_dros
 # Takes:    array of all combinations of parameters
 # Does:     generates the images and masks for each combination of parameters
 # Returns:  List of all folders for all images generated
-def generating(params):
+def generate_all_dros(params, output):
     dicoms = []
     masks = []
     dsos = []
     for param in params:
-        output = generate(param)
-        name, dicom, mask = output
-        dso = png_to_dso.make_dsos(mask, dicom)
+        name, dicom, mask = generate_single_dro(param, output)
+        dso = png_to_dso.make_dsos(mask, dicom, output)
         dicoms.append(dicom)
         masks.append(mask)
         dsos.append(dso)
@@ -116,29 +115,31 @@ def generating(params):
 # Does:     make unique ids for the dro
 #           generate all files for the dro
 # Return:   list of the name and locations of the dros files
-def generate(arguments):
+def generate_single_dro(arguments, outpu):
     arguments = [float(arg) for arg in arguments]
     global r,  xx, yy, zz, shape_freq, shape_amp, avg, text_wav, text_amp, decay
     r,  xx, yy, zz, shape_freq, shape_amp, avg, text_wav, text_amp, decay = arguments
-    make_folders(arguments)
+    make_folders(arguments, output)
     make_unique()
-    generate_files()
+    mask, output_array = generate_dro()
+    write_dro_files(mask, output_array)
     return [name, dicom_folder, mask_folder]
+
 
 # make_folders
 # Takes:    argument list for a single dro
 # Does:     generate unique name for the dro
 #           create dicom and mask folder for this dro
 # Return:   nothing
-def make_folders(arguments):
+def make_folders(arguments, output):
     global name
     name = 'Phantom'
     for arg in arguments:
         name = name + '-' + str(arg)
 
     global mask_folder, dicom_folder
-    mask_folder = out+'Mask/'+name
-    dicom_folder = out+'DICOM/'+name
+    mask_folder = output+'Mask/'+name
+    dicom_folder = output+'DICOM/'+name
     if not exists(mask_folder):
         os.makedirs(mask_folder)
     if not exists(dicom_folder):
@@ -151,21 +152,20 @@ def make_folders(arguments):
 # Return:   nothing
 def make_unique():
     global instance_uid, instance_step
-    instance_uid = pydicom.uid.generate_uid()[:-1]+'.1'
+    instance_uid = pydicom.uid.generate_uid()[:-2] + ".1"
     instance_step = instance_uid
 
 # Generate File by Slice
-def generate_files():
-    mask, output = generate_dro()
+def write_dro_files(mask, output_array):
     n = np.shape(mask)[-1]
     print('dro generated')
     for k in range(n):
-        # Once a complete 2D Slice has been generated, write this to png and dicome
+        # Once a complete 2D Slice has been generated, write this to png and dicom
         png_name = mask_folder+'/slice' + str(k).zfill(3) + '.png'
         mask_slice = mask[:, :, k].astype(np.uint8)
         imageio.imwrite(png_name, mask_slice)
-        input_array = output[:,:,k]
-        write_dicom(input_array, dicom_folder+'/slice' + str(k).zfill(3) + '.dcm', k,mask[:, :, k])
+        slice_to_write = output_array[:,:,k]
+        write_dicom(slice_to_write, dicom_folder+'/slice' + str(k).zfill(3) + '.dcm', k,mask[:, :, k])
 
 
 # generate_dro
@@ -207,22 +207,22 @@ def generate_dro():
         inside  = np.copy(texture)
         inside[~mask] = 0 
         texture = filters.gaussian_filter(texture,sigma=decay)
-        output = texture
+        output_array = texture
         texture[mask] = 0
-        output = inside + texture 
+        output_array = inside + texture 
     else:
         texture[~mask] = 0
-        output = texture
-    return mask, output
+        output_array = texture
+    return mask, output_array
 
 
 # prepare_zips
 # Takes:    folders for dicoms, masks, and dsos
 # Does:     zips all folders 
 # Returns:  locations of all the zipped folders
-def prepare_zips(dicoms, masks, dsos):
+def prepare_zips(dicoms, masks, dsos, output):
     top = os.path.dirname(os.path.dirname(os.path.dirname(dicoms[0])))
-    cur = os.path.join(top,'output')
+    cur = output #os.path.join(top,'output')
     for path in dicoms:
         if os.path.dirname(os.path.dirname(path)) != cur:
             move = os.path.join(cur,'DICOM',os.path.basename(path))
@@ -255,7 +255,7 @@ def cleanup(big_folders):
 
 
 #Writes a DICOM file using an input array, filename, and slice number
-def write_dicom(input_array, filename, step,mask_slice):
+def write_dicom(slice_to_write, filename, step,mask_slice):
     ds = pydicom.dcmread(curr + '/dro_template.dcm')
 
     ds.ContentDate = str(datetime.date.today()).replace('-', '')
@@ -278,12 +278,13 @@ def write_dicom(input_array, filename, step,mask_slice):
 
     ds.PatientName = name
     ds.PatientID = name
+    ds.PatientSex = "O"
 
-    (ds.Columns, ds.Rows) = input_array.shape
+    (ds.Columns, ds.Rows) = slice_to_write.shape
 
-    input_array_unsign = input_array.astype(np.uint16)
+    slice_to_write_unsign = slice_to_write.astype(np.uint16)
 
-    ds.PixelData = input_array_unsign.tostring()
+    ds.PixelData = slice_to_write_unsign.tostring()
 
     ds.SliceThickness = str(1)
     ds.ReconstructionDiameter = str(512.0)
@@ -301,13 +302,13 @@ def frange(start, stop, step):
 
 
 if __name__ == '__main__':
-    out = results.output
+    output = results.output
     curr          = os.path.dirname(os.path.abspath(__file__))
     processed_inputs = process_input(results.config)
     expanded_ranges  = expand_range(processed_inputs)
     full_param_list  = generate_params(expanded_ranges)
-    dicoms, masks, dsos = generating(full_param_list)
-    zips = prepare_zips(dicoms, masks, dsos)
+    dicoms, masks, dsos = generate_all_dros(full_param_list, output)
+    #zips = prepare_zips(dicoms, masks, dsos, output)
     
 
 

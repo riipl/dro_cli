@@ -1,4 +1,4 @@
-import scipy.misc
+import imageio
 import os
 from os import listdir, makedirs, getcwd
 from os.path import isfile, isdir, join, exists
@@ -10,37 +10,49 @@ import shlex
 #Path to EPAD
 curr = os.path.dirname(os.path.abspath(__file__))
 file_jar = curr + "/epad-ws-1.1-jar-with-dependencies.jar"
-output = curr + '/output/DSO'
 pngs = ''
 dicoms = ''
 tmp_dir = ''
 
 # Make DSOs
-def make_dsos(in_pngs, in_dicoms):
+# Input: png location, dicom location
+# Does:  sets these to global variables
+#		 creates temporary folder of tiffs
+#		 Reads tiff from location and generates dso using java
+#        Returns location of dso 
+def make_dsos(in_pngs, in_dicoms, output_top):
+	output = os.path.join(output_top,"DSO")
 	global pngs, dicoms
 	pngs = in_pngs
 	dicoms = in_dicoms
-	make_temp()
+	make_temp(output)
 	make_tiffs()
-	return make_dso()
+	return make_dso(output)
 
-def make_temp():
+# make_temp
+# Does: Generates temporary directory
+def make_temp(output):
 	global tmp_dir
 	tmp_dir = output+'/temp'
 	if exists(tmp_dir):
 	    shutil.rmtree(tmp_dir)
 	makedirs(tmp_dir)
 
+# make_tiffs
+# Does: Fills temporary directory with tiffs instead of pngs
 def make_tiffs():
 	i = 0
 	for filename in sorted(os.listdir(pngs)):
 	    if filename.endswith(".png"):
-	        img = scipy.misc.imread(pngs+'/'+filename)
+	        img = imageio.imread(pngs+'/'+filename)
 	        img_name = str(i).zfill(3) + '.tif'
-	        scipy.misc.imsave(join(tmp_dir, img_name), img)
+	        imageio.imsave(join(tmp_dir, img_name), img)
 	        i+=1
 
-def make_dso():
+# make_dso
+# Does: Corrects any operating system issues with file naming
+#       Runs epad jar to generate dsos
+def make_dso(output):
 	dso_name = output + dicoms[dicoms.rfind('/',0,len(dicoms)-1):]+'.dcm'
 	tif_path = tmp_dir
 	tmp_dir_fixed = tmp_dir.replace('\\','/')
