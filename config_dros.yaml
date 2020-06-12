@@ -7,17 +7,17 @@
  
 parameters:
 #   # Size Features
-    mean_radius: [25, 25, 1]
+    mean_radius: [20, 100, 2]
 #   # Shape Features
 #   x_deformation:
 #   y_deformation:
 #   z_deformation:
-    surface_frequency: [7, 7, 1]
-    surface_amplitude: [0,0, 1]
+    surface_frequency: [9, 9, 1]
+    surface_amplitude: [0,0.2, 2]
 #   # Intensity Features
-    mean_intensity: [100, 100, 1]
+    mean_intensity: [-100, 100, 2]
 #   # Texture Features
     texture_wavelength: [10,10,1]
-    texture_amplitude: [0, 0, 1]
+    texture_amplitude: [0, 50, 2]
 #   # Margin Features
-    gaussian_standard_deviation: [0, 0, 1]
+    gaussian_standard_deviation: [0, 10, 2]

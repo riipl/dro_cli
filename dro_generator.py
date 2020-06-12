@@ -1,5 +1,5 @@
 import os
-from os.path import exists
+from os.path import exists, join
 import numpy as np
 import imageio
 import scipy.ndimage as ndi
@@ -115,7 +115,7 @@ def generate_all_dros(params, output):
 # Does:     make unique ids for the dro
 #           generate all files for the dro
 # Return:   list of the name and locations of the dros files
-def generate_single_dro(arguments, outpu):
+def generate_single_dro(arguments, output):
     arguments = [float(arg) for arg in arguments]
     global r,  xx, yy, zz, shape_freq, shape_amp, avg, text_wav, text_amp, decay
     r,  xx, yy, zz, shape_freq, shape_amp, avg, text_wav, text_amp, decay = arguments
@@ -138,8 +138,8 @@ def make_folders(arguments, output):
         name = name + '-' + str(arg)
 
     global mask_folder, dicom_folder
-    mask_folder = output+'Mask/'+name
-    dicom_folder = output+'DICOM/'+name
+    mask_folder = os.path.join(os.path.join(output,'Mask'),name)
+    dicom_folder = os.path.join(os.path.join(output,'DICOM'),name)
     if not exists(mask_folder):
         os.makedirs(mask_folder)
     if not exists(dicom_folder):
@@ -221,8 +221,7 @@ def generate_dro():
 # Does:     zips all folders 
 # Returns:  locations of all the zipped folders
 def prepare_zips(dicoms, masks, dsos, output):
-    top = os.path.dirname(os.path.dirname(os.path.dirname(dicoms[0])))
-    cur = output #os.path.join(top,'output')
+    cur = output 
     for path in dicoms:
         if os.path.dirname(os.path.dirname(path)) != cur:
             move = os.path.join(cur,'DICOM',os.path.basename(path))
@@ -308,7 +307,7 @@ if __name__ == '__main__':
     expanded_ranges  = expand_range(processed_inputs)
     full_param_list  = generate_params(expanded_ranges)
     dicoms, masks, dsos = generate_all_dros(full_param_list, output)
-    #zips = prepare_zips(dicoms, masks, dsos, output)
+    zips = prepare_zips(dicoms, masks, dsos, output)
     
 
 
