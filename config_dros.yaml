@@ -18,6 +18,6 @@ parameters:
     mean_intensity: [-100, 100, 2]
 #   # Texture Features
     texture_wavelength: [10,10,1]
-    texture_amplitude: [0, 50.0, 2]
+    texture_amplitude: [0, 50, 2]
 #   # Margin Features
     gaussian_standard_deviation: [0, 10, 2]
